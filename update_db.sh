@@ -7,24 +7,26 @@ WGET_OPTS="--quiet --no-clobber"
 
 function get_file()
 {
-
 	permit=$1
 	retries=$2
-	echo "retries $retries"
 	if [ "$retries" == "" ]; then
 		retries=0;
 	fi
+	if [ -e "$permit.csv" ]; then
+		return;
+	fi
+	echo "retries $retries"
 	echo "will try to get permit $permit"
-	wget $WGET_OPTS http://bsm.sfdpw.org/permitstracker/PrintPermit.aspx?permit=$permit -O $permit.pdf
+	wget --quiet --no-clobber http://bsm.sfdpw.org/permitstracker/PrintPermit.aspx?permit=$permit -O $permit.pdf
 	if [ "$(head -c 4 $permit.pdf)" != "%PDF" ]; then
 	    echo "Not a pdf - trying to find actual PDF"
 	    fname=$(grep -o "/pics/[^\"]*" "$permit.pdf" | tail -n 1)
 	    rm "$permit.pdf" -f
 	    echo "will get http://bsm.sfdpw.org/$fname"
-	    wget $WGET_OPTS "http://bsm.sfdpw.org/$fname" -O $permit.pdf
+	    wget --quiet --no-clobber "http://bsm.sfdpw.org/$fname" -O $permit.pdf
 	fi
 
-	java -jar ./tabula-1.0.3-jar-with-dependencies.jar -l -p all -r -u "$permit.pdf"
+	java -jar ../tabula-1.0.3-jar-with-dependencies.jar -l -p all -r -u "$permit.pdf" > "$permit.csv"
 	if (( $? != 0 && $retries < 3 )); then
 		get_file $permit $((retries+1))
 	fi
@@ -33,8 +35,8 @@ function get_file()
 export -f get_file
 
 
-get_file 19TOC-05665
-exit
+# get_file 19TOC-05665
+# exit
 
 wget --no-clobber https://github.com/tabulapdf/tabula-java/releases/download/v1.0.3/tabula-1.0.3-jar-with-dependencies.jar
 
@@ -61,4 +63,24 @@ echo -e $fullurls | xargs -n 1 -P $MAXGETS -t bash -c 'get_file "$@"' _
 # done
 cd -
 
-java -jar ./tabula-1.0.3-jar-with-dependencies.jar -b "./$OUTDIR" -l -p all -r -u;
+echo "permit,streetname,from_st,to_st" > sonic_intersections.csv;
+ls ./out/*TOC*.csv | xargs -L1 python clean_tabula_csv.py >> sonic_intersections.csv;
+
+rm sonic.sqlite;
+echo "
+.separator ','
+.import sonic_intersections.csv sonic_intersections
+.import List_of_Streets_and_Intersections.csv sf_intersections
+.import San_Francisco_Basemap_Street_Centerlines.csv sf_cnn
+" | sqlite3 sonic.sqlite
+
+echo "
+SELECT sf_cnn.cnn, sonic.permit, sonic.streetname, sonic.from_st, sonic.to_st, sf_cnn.geometry
+FROM sonic_intersections sonic
+LEFT JOIN sf_intersections sf
+  ON sonic.streetname = sf.streetname
+  AND sonic.from_st = sf.from_st
+  AND sonic.to_st = sf.to_st
+LEFT JOIN sf_cnn
+  ON sf.cnn = sf_cnn.cnn;
+" | sqlite3 sonic.sqlite > sonic_fiber.csv
